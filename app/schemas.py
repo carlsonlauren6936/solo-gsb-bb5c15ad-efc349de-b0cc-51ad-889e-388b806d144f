@@ -180,3 +180,33 @@ class CaseRecord(BaseModel):
     result: AdjudicateResponse = Field(
         ..., description="当前结果:对全部已生效裁决重算后的对齐、共识与审计项"
     )
+
+
+class AnchorSuggestion(BaseModel):
+    """一条锚点建议:三方唯一且极大的公共片段及其首字素锚点。"""
+
+    content: str = Field(..., description="片段内容(三份文本完全一致,NFC)")
+    starts: list[int] = Field(
+        ..., description="片段在 texts[0/1/2] 中的起点字素簇下标(0 起始,含)"
+    )
+    ends: list[int] = Field(
+        ..., description="片段在 texts[0/1/2] 中的终点字素簇下标(0 起始,不含)"
+    )
+    length: int = Field(..., description="片段长度(字素簇数)")
+    anchor: Anchor = Field(
+        ..., description="可直接提交的首字素锚点:positions 即三方起点"
+    )
+
+
+class AnchorSuggestionsResponse(BaseModel):
+    """案件锚点建议:最优单调链;只读,不修改案件。"""
+
+    case_id: str = Field(..., description="案件 ID")
+    revision: int = Field(..., description="生成建议时读取的案件版本;建议本身不修改案件")
+    covered_graphemes: int = Field(
+        ..., description="建议链在三份文本中各自覆盖的字素簇总数(各来源相同)"
+    )
+    suggestions: list[AnchorSuggestion] = Field(
+        ...,
+        description="最优单调链,按三方起点升序;与既有锚点合并后各来源位置仍严格递增",
+    )

@@ -13,6 +13,7 @@ from .schemas import (
     AdjudicateResponse,
     AnchoredReconcileRequest,
     AnchoredReconcileResponse,
+    AnchorSuggestionsResponse,
     AppendAdjudicationsRequest,
     CaseRecord,
     Decision,
@@ -20,15 +21,17 @@ from .schemas import (
     ReconcileResponse,
 )
 from .store import CaseNotFound, CaseStore, RevisionConflict
+from .suggest import suggest_anchors
 
 MAX_GRAPHEMES = 120
 
 app = FastAPI(
     title="抄本核对 API",
-    version="1.3.0",
+    version="1.4.0",
     description=(
         "接收三段抄录文本,NFC 规范化后做三维全局动态规划对齐,输出共识文本、对齐列与总成本;"
-        "支持锚点强制对齐、人工裁决 uncertain 列,并可将案件持久化到 SQLite 后增量追加裁决。"
+        "支持锚点强制对齐、人工裁决 uncertain 列,并可将案件持久化到 SQLite 后增量追加裁决;"
+        "还可为已保存案件只读地建议可追加的锚点。"
     ),
 )
 
@@ -202,6 +205,26 @@ def get_case(case_id: str) -> dict:
     if record is None:
         raise HTTPException(status_code=404, detail=f"案件不存在:{case_id}")
     return _case_response(record)
+
+
+@app.get("/cases/{case_id}/anchor-suggestions", response_model=AnchorSuggestionsResponse)
+def get_case_anchor_suggestions(case_id: str) -> dict:
+    """只读锚点建议:为案件寻找可追加的锚点,不修改案件。
+
+    对库存三份文本(NFC 字素簇)寻找三方一致、各自唯一且极大的连续公共
+    片段,排除已保存锚点覆盖的片段后选出最优单调链;建议与既有锚点合并
+    后各来源位置仍严格递增。
+    """
+    record = store.get_case(case_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"案件不存在:{case_id}")
+    seqs = _to_clusters(record["texts"])
+    anchors = [tuple(a) for a in record["anchors"]]
+    return {
+        "case_id": record["case_id"],
+        "revision": record["revision"],
+        **suggest_anchors(seqs, anchors),
+    }
 
 
 @app.post("/cases/{case_id}/adjudications", response_model=CaseRecord)

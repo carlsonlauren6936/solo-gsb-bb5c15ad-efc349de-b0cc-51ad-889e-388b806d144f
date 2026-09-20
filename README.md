@@ -107,6 +107,41 @@ curl -X POST http://localhost:8000/cases/9f0b1c2d3e4f40518a6b7c8d9e0f1a2b/adjudi
 }
 ```
 
+### `GET /cases/{case_id}/anchor-suggestions`
+
+**只读**的案件锚点建议:不修改案件(`revision`、锚点、裁决与结果均不变),可反复调用。
+
+- **地址**:`GET http://localhost:8000/cases/{case_id}/anchor-suggestions`
+- **参数**:仅路径参数 `case_id`(创建案件时返回的 ID),无请求体;案件不存在返回 404。
+- **响应**:`case_id`、`revision`(生成建议时读取的版本)、`covered_graphemes`(建议链在三份文本中**各自**覆盖的字素簇总数,各来源相同)与 `suggestions`(按三方起点升序)。每条建议含:
+  - `content`:片段内容(三份文本完全一致,NFC);
+  - `starts` / `ends`:片段在 `texts[0/1/2]` 中的起止字素簇下标(0 起始,起点含、终点不含);
+  - `length`:片段长度(字素簇数);
+  - `anchor`:可直接提交的首字素锚点 `{"positions": [i, j, k]}`,与既有锚点合并后各来源位置仍严格递增,可直接放入 `anchors` 用于 `/reconcile/anchored` 或新案件。
+
+```bash
+curl http://localhost:8000/cases/9f0b1c2d3e4f40518a6b7c8d9e0f1a2b/anchor-suggestions
+```
+
+```json
+{
+  "case_id": "9f0b1c2d3e4f40518a6b7c8d9e0f1a2b",
+  "revision": 0,
+  "covered_graphemes": 1,
+  "suggestions": [
+    {
+      "content": "甲",
+      "starts": [0, 0, 0],
+      "ends": [1, 1, 1],
+      "length": 1,
+      "anchor": {"positions": [0, 0, 0]}
+    }
+  ]
+}
+```
+
+建议规则:对库存三份文本(NFC 字素簇)寻找**三方内容完全相同、且在各自文本中仅出现一次**的连续公共片段,候选取**双向不可再延长**的极大片段;按**长度降序、三方起点字典序**稳定排序后,选出**总覆盖字素数最大的互不重叠单调链**(每份文本中区间两两不相交且起点次序一致);同分时依次取**候选数更少**、**名次序列(按候选排序)字典序更小**的方案。已保存锚点覆盖的片段被排除,且每条建议与每个既有锚点在三方保持一致的先后次序,保证合并后各来源位置严格递增。
+
 ### `POST /reconcile/adjudicate`
 
 人工裁决接口。请求在三段文本之外可携带 `anchors`(同 `/reconcile/anchored`)与 `decisions`(裁决列表,可省略)。服务端先按本次请求**重算对齐**,再一次性校验全部裁决,全部有效才生效:
@@ -318,6 +353,7 @@ curl -X POST http://localhost:8000/reconcile/anchored \
 - 锚点(仅 `/reconcile/anchored` 与 `/reconcile/adjudicate`):每个锚点强制三份文本指定位置的字素同列(掩码 7);锚点把序列切分为若干区间,各区间独立求全局最小成本后拼接,锚点列照常计入成本与共识。
 - 人工裁决(仅 `/reconcile/adjudicate`):以三来源原始位置签名定位 `uncertain` 列,采用某非空来源字素或单个 NFC 字素簇替换值;服务端重算对齐后一次性原子校验全部裁决,任一失效返回 409 且无部分结果,成功则返回裁决后文本、未裁决列与审计项。
 - 持久化案件(`/cases` 系列):三段文本、锚点、裁决列表、当前结果与递增 `revision` 存入 SQLite;追加裁决须携带 `expected_revision`,服务端在同一事务中校验版本、合并既有与新增裁决并重算/原子校验,版本不符或任一裁决失效均返回 409 且不写入,成功后 `revision` 加一。
+- 锚点建议(`GET /cases/{case_id}/anchor-suggestions`,只读):候选为三方一致、各自唯一且双向极大的连续公共片段,排除已保存锚点覆盖的片段;按长度降序、三方起点字典序排序后选出总覆盖字素数最大的互不重叠单调链(同分时依次取候选数更少、名次序列更小者);建议与既有锚点合并后各来源位置仍严格递增,不修改案件。
 
 ## 本地开发
 
