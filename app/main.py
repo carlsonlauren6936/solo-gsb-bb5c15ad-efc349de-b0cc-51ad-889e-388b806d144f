@@ -13,6 +13,7 @@ from .schemas import (
     AdjudicateResponse,
     AnchoredReconcileRequest,
     AnchoredReconcileResponse,
+    AnchorSuggestionsResponse,
     AppendAdjudicationsRequest,
     CaseRecord,
     Decision,
@@ -20,15 +21,17 @@ from .schemas import (
     ReconcileResponse,
 )
 from .store import CaseNotFound, CaseStore, RevisionConflict
+from .suggestions import suggest_anchors
 
 MAX_GRAPHEMES = 120
 
 app = FastAPI(
     title="抄本核对 API",
-    version="1.3.0",
+    version="1.4.0",
     description=(
         "接收三段抄录文本,NFC 规范化后做三维全局动态规划对齐,输出共识文本、对齐列与总成本;"
-        "支持锚点强制对齐、人工裁决 uncertain 列,并可将案件持久化到 SQLite 后增量追加裁决。"
+        "支持锚点强制对齐、人工裁决 uncertain 列,并可将案件持久化到 SQLite 后增量追加裁决;"
+        "可对已保存案件只读地建议可直接提交的锚点。"
     ),
 )
 
@@ -235,3 +238,34 @@ def post_case_adjudications(case_id: str, req: AppendAdjudicationsRequest) -> di
         # 合并后任一裁决失效即整体回滚(409),detail 下标按"既有在前、追加在后"的合并顺序
         raise HTTPException(status_code=409, detail=_conflict_detail(exc))
     return _case_response(record)
+
+
+@app.get("/cases/{case_id}/anchor-suggestions", response_model=AnchorSuggestionsResponse)
+def get_case_anchor_suggestions(case_id: str) -> dict:
+    """只读的案件锚点建议:不修改案件,不改变 revision。
+
+    对案件三份文本(NFC 规范化、按字素簇切分)枚举三方内容完全相同、且在
+    各自文本中仅出现一次的连续公共片段;排除与已保存锚点重叠或跨越锚点
+    间隙的片段(使建议与既有锚点合并后各来源位置仍严格递增)。候选按长度
+    降序与三方起点字典序稳定排序后,选择覆盖总字素数最大的互不重叠单调
+    链,同分时候选数更少、排序序列更小的方案优先。返回片段内容、三方
+    [start, end) 区间及可直接提交的首字素锚点。案件不存在返回 404。
+    """
+    record = store.get_case(case_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"案件不存在:{case_id}")
+    seqs = _to_clusters(record["texts"])
+    anchor_tuples = [tuple(a) for a in record["anchors"]]
+    suggestions = suggest_anchors(seqs, anchor_tuples)
+    return {
+        "case_id": record["case_id"],
+        "revision": record["revision"],
+        "suggestions": [
+            {
+                "text": s.text,
+                "positions": s.positions,
+                "anchor": s.anchor,
+            }
+            for s in suggestions
+        ],
+    }

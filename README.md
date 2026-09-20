@@ -107,6 +107,48 @@ curl -X POST http://localhost:8000/cases/9f0b1c2d3e4f40518a6b7c8d9e0f1a2b/adjudi
 }
 ```
 
+### `GET /cases/{case_id}/anchor-suggestions`
+
+只读的**锚点建议**接口:对案件三份文本(NFC 规范化、按字素簇切分)给出可直接采纳的锚点,**不修改案件、不改变 `revision`**。案件不存在返回 404;无任何请求参数与请求体。
+
+服务端枚举**三方内容完全相同、且在各自文本中均恰好出现一次**的非空连续公共片段(某片段在任一文本中出现多次即无法唯一定位,不予建议);已保存锚点覆盖或与锚点共址、跨越锚点切出区间的片段都会被排除,保证建议与既有锚点合并后各来源位置仍**严格递增**。候选按**长度降序**、其次**三方起点字典序**稳定排序;再从中选择三方互不重叠、严格单调的链,使链上片段**覆盖总字素数最大**,同分时依次选择**候选数更少**、**排序序列**(选中候选在稳定排序中的下标序列)字典序更小的方案。
+
+每条建议返回:`text`(片段内容)、`positions`(片段在三份文本中的字素簇区间 `[start, end)`,0 起始、左闭右开)与 `anchor`(可直接提交的**首字素锚点**,形状与 `/cases` 的 `anchors` 完全一致,可原样放进创建案件或锚点对齐请求)。
+
+```bash
+curl http://localhost:8000/cases/9f0b1c2d3e4f40518a6b7c8d9e0f1a2b/anchor-suggestions
+```
+
+```json
+{
+  "case_id": "9f0b1c2d3e4f40518a6b7c8d9e0f1a2b",
+  "revision": 0,
+  "suggestions": [
+    {
+      "text": "甲乙",
+      "positions": [[0, 2], [1, 3], [0, 2]],
+      "anchor": {"positions": [0, 1, 0]}
+    },
+    {
+      "text": "丙丁",
+      "positions": [[3, 5], [3, 5], [2, 4]],
+      "anchor": {"positions": [3, 3, 2]}
+    }
+  ]
+}
+```
+
+把建议直接作为锚点提交给带锚点接口(或在创建案件时一并保存):
+
+```bash
+curl -X POST http://localhost:8000/reconcile/anchored \
+  -H "Content-Type: application/json" \
+  -d '{"texts": ["甲乙X丙丁", "X甲乙丙丁", "甲乙丙丁X"],
+       "anchors": [{"positions": [0, 1, 0]}, {"positions": [3, 3, 2]}]}'
+```
+
+建议始终基于案件**当前已保存的锚点**计算;没有可建议片段时 `suggestions` 为空数组。位置均为 NFC 规范化后文本的字素簇下标(与其他接口的 `position` 一致)。
+
 ### `POST /reconcile/adjudicate`
 
 人工裁决接口。请求在三段文本之外可携带 `anchors`(同 `/reconcile/anchored`)与 `decisions`(裁决列表,可省略)。服务端先按本次请求**重算对齐**,再一次性校验全部裁决,全部有效才生效:
@@ -318,6 +360,7 @@ curl -X POST http://localhost:8000/reconcile/anchored \
 - 锚点(仅 `/reconcile/anchored` 与 `/reconcile/adjudicate`):每个锚点强制三份文本指定位置的字素同列(掩码 7);锚点把序列切分为若干区间,各区间独立求全局最小成本后拼接,锚点列照常计入成本与共识。
 - 人工裁决(仅 `/reconcile/adjudicate`):以三来源原始位置签名定位 `uncertain` 列,采用某非空来源字素或单个 NFC 字素簇替换值;服务端重算对齐后一次性原子校验全部裁决,任一失效返回 409 且无部分结果,成功则返回裁决后文本、未裁决列与审计项。
 - 持久化案件(`/cases` 系列):三段文本、锚点、裁决列表、当前结果与递增 `revision` 存入 SQLite;追加裁决须携带 `expected_revision`,服务端在同一事务中校验版本、合并既有与新增裁决并重算/原子校验,版本不符或任一裁决失效均返回 409 且不写入,成功后 `revision` 加一。
+- 锚点建议(仅 `GET /cases/{case_id}/anchor-suggestions`,只读):对案件三份 NFC 字素簇文本,枚举三方内容完全相同且各自仅出现一次的连续公共片段,排除已保存锚点覆盖/共址及跨越锚点区间者;候选按长度降序、三方起点字典序稳定排序,再选覆盖总字素数最大的互不重叠严格单调链,同分时候选数更少、排序序列更小者优先;返回片段内容、三方 `[start, end)` 区间与可直接提交的首字素锚点,不修改案件。
 
 ## 本地开发
 
